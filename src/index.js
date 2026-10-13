@@ -10,6 +10,51 @@ const DEFAULT_ACCOUNT = 'SIB';
 
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // 1. Handle CORS for frontend requests
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': '*', // In production, replace '*' with your Pages URL
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    };
+
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers: corsHeaders, status: 204 });
+    }
+
+    // 2. New AI Analysis Endpoint
+    if (url.pathname === '/api/analyze' && request.method === 'POST') {
+      try {
+        const { expenses } = await request.json();
+        
+        const prompt = `Analyze these expenses. Categorize them into 3-4 broad categories (like Food, Transport, Utilities) and provide a 2-sentence financial summary. Here is the data: ${JSON.stringify(expenses)}`;
+
+        const aiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${env.OPENAI_API_KEY}`
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'user', content: prompt }]
+          })
+        });
+
+        const aiData = await aiResponse.json();
+        const analysisText = aiData.choices[0].message.content;
+
+        return new Response(JSON.stringify({ analysis: analysisText }), { 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 200 
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), { headers: corsHeaders, status: 500 });
+      }
+    }
+
+    // 3. Existing Telegram Webhook Logic...
     if (request.method !== 'POST') {
       return new Response('Expense Bot is running!', { status: 200 });
     }
