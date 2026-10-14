@@ -28,29 +28,22 @@ export default {
       try {
         const { expenses } = await request.json();
         
-        const prompt = `Analyze these expenses. Categorize them into 3-4 broad categories (like Food, Transport, Utilities) and provide a 2-sentence financial summary. Here is the data: ${JSON.stringify(expenses)}`;
+        const prompt = `Analyze these expenses. Categorize them into 3-4 broad categories (like Food, Transport, Utilities) and provide a short 2-sentence financial summary. Here is the data: ${JSON.stringify(expenses)}`;
 
-        const aiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${env.OPENAI_API_KEY}`
-          },
-          body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            messages: [{ role: 'user', content: prompt }]
-          })
+        // Use Cloudflare's free Llama 3 model natively
+        const aiResponse = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+          messages: [{ role: 'user', content: prompt }]
         });
 
-        const aiData = await aiResponse.json();
-        const analysisText = aiData.choices[0].message.content;
-
-        return new Response(JSON.stringify({ analysis: analysisText }), { 
+        return new Response(JSON.stringify({ analysis: aiResponse.response }), { 
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           status: 200 
         });
       } catch (error) {
-        return new Response(JSON.stringify({ error: error.message }), { headers: corsHeaders, status: 500 });
+        return new Response(JSON.stringify({ error: error.message }), { 
+          headers: corsHeaders, 
+          status: 500 
+        });
       }
     }
 
