@@ -23,31 +23,45 @@ export default {
       return new Response(null, { headers: corsHeaders, status: 204 });
     }
 
-    // 2. New AI Analysis Endpoint (Fixed for Deterministic Math)
+    // 2. AI Analysis Endpoint
     if (url.pathname === '/api/analyze' && request.method === 'POST') {
       try {
         const { expenses } = await request.json();
         
-        // 1. AI Prompt: Only ask for classification by ID, absolutely no math.
-        const prompt = `You are a categorizer. Read these expenses and assign a short category name (like "Food & Dining", "Transport", "Utilities", "Misc") to each one based on its 'id'. Output ONLY a valid JSON object where keys are the expense 'id' and values are the string category name. Example: {"uuid-1": "Food", "uuid-2": "Misc"}. Data: ${JSON.stringify(expenses)}`;
+        // Dynamic AI Prompt: Instructs Llama to adaptively split or merge categories
+        const prompt = `You are an intelligent financial categorizer. Analyze the following list of expenses and assign a short category name to each based on its 'id'. 
+        
+        Follow these rules to dynamically size the categories:
+        - If there are many diverse items, merge similar ones into broad groups (e.g., group "movie", "spotify", and "game" into "Entertainment").
+        - If the items are overwhelmingly from a single broad category (e.g., mostly food items), split them into specific sub-categories (e.g., "Groceries", "Dining Out", "Coffee & Snacks").
+        - Aim for 3 to 6 optimal categories in total to make a clean, readable chart.
+        - Output ONLY a valid JSON object where keys are the expense 'id' and values are the string category name. No conversational text.
+        
+        Example: {"uuid-1": "Groceries", "uuid-2": "Dining Out"}. Data: ${JSON.stringify(expenses)}`;
 
         const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
           messages: [{ role: 'user', content: prompt }]
         });
 
-        // 2. Safely parse AI output mapping
-        const cleanString = aiResponse.response.replace(/```json/g, '').replace(/```/g, '').trim();
+        // Safely extract ONLY the JSON object, ignoring any polite AI text
+        const rawResponse = aiResponse.response;
+        const startIndex = rawResponse.indexOf('{');
+        const endIndex = rawResponse.lastIndexOf('}');
+        
+        if (startIndex === -1 || endIndex === -1) {
+          throw new Error("AI failed to generate a JSON object.");
+        }
+        
+        const cleanString = rawResponse.substring(startIndex, endIndex + 1);
         const categoryMap = JSON.parse(cleanString);
 
-        // 3. Let JavaScript do the exact math deterministically
+        // Let JavaScript do the exact math deterministically
         const calculatedTotals = {};
         expenses.forEach(exp => {
-          // If the AI missed an ID, default it to "Other"
           const categoryName = categoryMap[exp.id] || "Other";
           calculatedTotals[categoryName] = (calculatedTotals[categoryName] || 0) + exp.amount;
         });
 
-        // 4. Return in the exact JSON format your React app already expects
         return new Response(JSON.stringify({ analysis: JSON.stringify(calculatedTotals) }), { 
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           status: 200 
@@ -60,7 +74,7 @@ export default {
       }
     }
 
-    // 3. Existing Telegram Webhook Logic...
+    // 3. Existing Telegram Webhook Logic
     if (request.method !== 'POST') {
       return new Response('Expense Bot is running!', { status: 200 });
     }
@@ -171,7 +185,8 @@ export default {
 
         if (data && data.length > 0) {
           await supabase.from('expenses').delete().eq('id', data[0].id);
-          await sendTelegramMessage(chatId, "done", env.TELEGRAM_TOKEN);
+          // Rich confirmation message
+          await sendTelegramMessage(chatId, `🗑️ *Removed:* ₹${amount} for ${category} (${account})`, env.TELEGRAM_TOKEN);
         } else {
           await sendTelegramMessage(chatId, "⚠️ Could not find a matching past entry to remove.", env.TELEGRAM_TOKEN);
         }
@@ -233,26 +248,37 @@ async function sendTelegramMessage(chatId, text, token) {
 }
 
 async function handleExpenseSummary(chatId, supabase, token, period) {
+  // Get current date strictly in IST
   const now = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Kolkata"}));
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
   
-  let startDateStr;
-  let title;
+  let startIST, endIST, title;
   
   if (period === 'today') {
-    startDateStr = `${year}-${month}-${day}T00:00:00+05:30`;
+    // Exactly 12:00 AM to 11:59 PM IST
+    startIST = new Date(`${year}-${month}-${day}T00:00:00+05:30`);
+    endIST = new Date(`${year}-${month}-${day}T23:59:59+05:30`);
     title = "Today's Expenses";
   } else {
-    startDateStr = `${year}-${month}-01T00:00:00+05:30`;
+    // Exactly the 1st of the month to the last day of the month IST
+    const lastDay = new Date(year, now.getMonth() + 1, 0).getDate();
+    startIST = new Date(`${year}-${month}-01T00:00:00+05:30`);
+    endIST = new Date(`${year}-${month}-${lastDay}T23:59:59+05:30`);
     title = "This Month's Expenses";
   }
 
+  // Convert IST boundaries to strict UTC ISO strings so Supabase doesn't guess the timezone
+  const startUTC = startIST.toISOString();
+  const endUTC = endIST.toISOString();
+
+  // Query using strictly bounded UTC timestamps
   const { data, error } = await supabase
     .from('expenses')
     .select('account, amount')
-    .gte('created_at', startDateStr);
+    .gte('created_at', startUTC)
+    .lte('created_at', endUTC);
 
   if (error || !data || data.length === 0) {
     await sendTelegramMessage(chatId, `No expenses recorded for ${period}.`, token);
