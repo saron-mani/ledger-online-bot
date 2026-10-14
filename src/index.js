@@ -28,9 +28,9 @@ export default {
       try {
         const { expenses } = await request.json();
         
-        const prompt = `Analyze these expenses. Categorize them into 3-4 broad categories (like Food, Transport, Utilities) and provide a short 2-sentence financial summary. Here is the data: ${JSON.stringify(expenses)}`;
+        // Strict prompt engineering to force a JSON-only response
+        const prompt = `You are a financial categorizer. Read the following expenses. Group them into 4 broad categories (e.g., Food & Dining, Transport, Utilities, Misc). Sum the amounts for each category. Output ONLY a valid JSON object where keys are category names and values are the total numbers. Do not include markdown, code blocks, or any other text. Example: {"Food": 150, "Transport": 20}. Expenses: ${JSON.stringify(expenses)}`;
 
-        // Use Cloudflare's free Llama 3 model natively
         const aiResponse = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
           messages: [{ role: 'user', content: prompt }]
         });
