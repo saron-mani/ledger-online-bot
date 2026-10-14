@@ -23,19 +23,32 @@ export default {
       return new Response(null, { headers: corsHeaders, status: 204 });
     }
 
-    // 2. New AI Analysis Endpoint
+    // 2. New AI Analysis Endpoint (Fixed for Deterministic Math)
     if (url.pathname === '/api/analyze' && request.method === 'POST') {
       try {
         const { expenses } = await request.json();
         
-        // Strict prompt engineering to force a JSON-only response
-        const prompt = `You are a financial categorizer. Read the following expenses. Group them into 4 broad categories (e.g., Food & Dining, Transport, Utilities, Misc). Sum the amounts for each category. Output ONLY a valid JSON object where keys are category names and values are the total numbers. Do not include markdown, code blocks, or any other text. Example: {"Food": 150, "Transport": 20}. Expenses: ${JSON.stringify(expenses)}`;
+        // 1. AI Prompt: Only ask for classification by ID, absolutely no math.
+        const prompt = `You are a categorizer. Read these expenses and assign a short category name (like "Food & Dining", "Transport", "Utilities", "Misc") to each one based on its 'id'. Output ONLY a valid JSON object where keys are the expense 'id' and values are the string category name. Example: {"uuid-1": "Food", "uuid-2": "Misc"}. Data: ${JSON.stringify(expenses)}`;
 
         const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
           messages: [{ role: 'user', content: prompt }]
         });
 
-        return new Response(JSON.stringify({ analysis: aiResponse.response }), { 
+        // 2. Safely parse AI output mapping
+        const cleanString = aiResponse.response.replace(/```json/g, '').replace(/```/g, '').trim();
+        const categoryMap = JSON.parse(cleanString);
+
+        // 3. Let JavaScript do the exact math deterministically
+        const calculatedTotals = {};
+        expenses.forEach(exp => {
+          // If the AI missed an ID, default it to "Other"
+          const categoryName = categoryMap[exp.id] || "Other";
+          calculatedTotals[categoryName] = (calculatedTotals[categoryName] || 0) + exp.amount;
+        });
+
+        // 4. Return in the exact JSON format your React app already expects
+        return new Response(JSON.stringify({ analysis: JSON.stringify(calculatedTotals) }), { 
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           status: 200 
         });
@@ -70,28 +83,8 @@ export default {
       const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_KEY);
 
       // --- COMMAND HANDLING ---
-	  if (command === '/start') {
-        const welcomeMessage = `👋 *Welcome to your Expense Tracker!*
-        
-I'm ready to log your expenses.
-
-📖 *How to log an expense:*
-*Format:* \`[account] <item> <amount>\`
-*Default Account:* ${DEFAULT_ACCOUNT}
-
-*Examples:*
-• \`sib petrol 500\` -> logs 500 to SIB
-• \`petrol 500\` -> logs 500 to SIB
-• \`500 petrol\` -> logs 500 to SIB
-• \`liquid 50 chocolates 100\` -> logs 100 to Cash
-• \`remove petrol 500\` -> Deletes the latest match
-
-*Commands:*
-/expensetoday - Today's summary
-/expensethismonth - This month's summary
-/status - Check bot connection
-/format - Show this formatting guide`;
-        
+      if (command === '/start') {
+        const welcomeMessage = `👋 *Welcome to your Expense Tracker!*\n\nI'm ready to log your expenses.\n\n📖 *How to log an expense:*\n*Format:* \`[account] <item> <amount>\`\n*Default Account:* ${DEFAULT_ACCOUNT}\n\n*Examples:*\n- \`sib petrol 500\` -> logs 500 to SIB\n- \`petrol 500\` -> logs 500 to SIB\n- \`500 petrol\` -> logs 500 to SIB\n- \`liquid 50 chocolates 100\` -> logs 100 to Cash\n- \`remove petrol 500\` -> Deletes the latest match\n\n*Commands:*\n/expensetoday - Today's summary\n/expensethismonth - This month's summary\n/status - Check bot connection\n/format - Show this formatting guide`;
         await sendTelegramMessage(chatId, welcomeMessage, env.TELEGRAM_TOKEN);
         return new Response('OK', { status: 200 });
       }
@@ -112,18 +105,7 @@ I'm ready to log your expenses.
       }
 
       if (command === '/format') {
-        const formatGuide = `📖 *Expense Bot Formats*
-        
-*Standard:* \`[account] <item> <amount>\`
-*Default Account:* ${DEFAULT_ACCOUNT}
-
-*Examples:*
-• \`sib petrol 500\` -> logs 500 to SIB
-• \`petrol 500\` -> logs 500 to SIB
-• \`500 petrol\` -> logs 500 to SIB
-• \`liquid 50 chocolates 100\` -> logs 100 to Cash
-• \`remove petrol 500\` -> Deletes the latest match`;
-        
+        const formatGuide = `📖 *Expense Bot Formats*\n\n*Standard:* \`[account] <item> <amount>\`\n*Default Account:* ${DEFAULT_ACCOUNT}\n\n*Examples:*\n- \`sib petrol 500\` -> logs 500 to SIB\n- \`petrol 500\` -> logs 500 to SIB\n- \`500 petrol\` -> logs 500 to SIB\n- \`liquid 50 chocolates 100\` -> logs 100 to Cash\n- \`remove petrol 500\` -> Deletes the latest match`;
         await sendTelegramMessage(chatId, formatGuide, env.TELEGRAM_TOKEN);
         return new Response('OK', { status: 200 });
       }
