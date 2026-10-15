@@ -28,22 +28,23 @@ export default {
       try {
         const { expenses } = await request.json();
         
-        // Dynamic AI Prompt: Instructs Llama to adaptively split or merge categories
-        const prompt = `You are an intelligent financial categorizer. Analyze the following list of expenses and assign a short category name to each based on its 'id'. 
+        // Force IDs to strings so the AI is less likely to drop the quotes
+        const safeExpenses = expenses.map(e => ({ ...e, id: String(e.id) }));
         
-        Follow these rules to dynamically size the categories:
-        - If there are many diverse items, merge similar ones into broad groups (e.g., group "movie", "spotify", and "game" into "Entertainment").
-        - If the items are overwhelmingly from a single broad category (e.g., mostly food items), split them into specific sub-categories (e.g., "Groceries", "Dining Out", "Coffee & Snacks").
-        - Aim for 3 to 6 optimal categories in total to make a clean, readable chart.
-        - Output ONLY a valid JSON object where keys are the expense 'id' and values are the string category name. No conversational text.
+        const prompt = `You are a financial categorizer. Analyze the following list of expenses and assign a short category name to each based on its 'id'. 
         
-        Example: {"uuid-1": "Groceries", "uuid-2": "Dining Out"}. Data: ${JSON.stringify(expenses)}`;
+        Rules:
+        - Merge similar items into broad groups. Split them if they are all from one category. Aim for 3 to 6 optimal categories.
+        - Output ONLY a valid JSON object.
+        - STRICT JSON RULES: All keys MUST be enclosed in double quotes (e.g., "123", not 123). All values MUST be enclosed in double quotes. No trailing commas. No markdown or conversational text.
+        
+        Example: {"1": "Food", "2": "Transport"}
+        Data: ${JSON.stringify(safeExpenses)}`;
 
         const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
           messages: [{ role: 'user', content: prompt }]
         });
 
-        // Safely extract ONLY the JSON object, ignoring any polite AI text
         const rawResponse = aiResponse.response;
         const startIndex = rawResponse.indexOf('{');
         const endIndex = rawResponse.lastIndexOf('}');
@@ -52,13 +53,23 @@ export default {
           throw new Error("AI failed to generate a JSON object.");
         }
         
-        const cleanString = rawResponse.substring(startIndex, endIndex + 1);
-        const categoryMap = JSON.parse(cleanString);
+        let cleanString = rawResponse.substring(startIndex, endIndex + 1);
+        
+        // Strip out any trailing commas the AI accidentally includes (e.g., {"1": "Food",})
+        cleanString = cleanString.replace(/,\s*}/g, '}');
+        
+        let categoryMap;
+        try {
+          categoryMap = JSON.parse(cleanString);
+        } catch (parseErr) {
+          // If it fails again, print the exact AI hallucination to the screen
+          throw new Error(`${parseErr.message} | AI Output: ${cleanString}`);
+        }
 
-        // Let JavaScript do the exact math deterministically
         const calculatedTotals = {};
         expenses.forEach(exp => {
-          const categoryName = categoryMap[exp.id] || "Other";
+          // Ensure we check the map using a stringified ID
+          const categoryName = categoryMap[String(exp.id)] || "Other";
           calculatedTotals[categoryName] = (calculatedTotals[categoryName] || 0) + exp.amount;
         });
 
@@ -93,6 +104,9 @@ export default {
       const text = msg.text.trim();
       const command = text.toLowerCase();
       const username = msg.from.username || msg.from.first_name || 'Anonymous';
+      
+      // Extract the absolute timestamp from Telegram to override the database clock
+      const exactTime = msg.date ? new Date(msg.date * 1000).toISOString() : new Date().toISOString();
 
       const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_KEY);
 
@@ -205,7 +219,7 @@ export default {
         // Standard Insert returning the new ID
         const { data: insertedRow, error } = await supabase
           .from('expenses')
-          .insert([{ username, account, category, amount, message_id: messageId }])
+          .insert([{ username, account, category, amount, message_id: messageId, created_at: exactTime }])
           .select('id')
           .single();
 
