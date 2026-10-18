@@ -174,8 +174,17 @@ export default {
       }
 
       // DB Ops
+      // --- DATABASE OPERATIONS ---
       if (isRemove) {
-        const { data } = await supabase.from('expenses').select('id').eq('account', account).eq('category', category).eq('amount', amount).order('created_at', { ascending: false }).limit(1);
+        const { data } = await supabase
+          .from('expenses')
+          .select('id')
+          .eq('account', account)
+          .ilike('category', category) // 🚨 NEW: Case-insensitive match! (church = Church)
+          .eq('amount', amount)
+          .order('created_at', { ascending: false })
+          .limit(1);
+
         if (data && data.length > 0) {
           await supabase.from('expenses').delete().eq('id', data[0].id);
           await sendTelegramMessage(chatId, `🗑️ *Removed:* ₹${Math.abs(amount)} for ${category} (${account})`, env.TELEGRAM_TOKEN);
