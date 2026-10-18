@@ -20,31 +20,40 @@ export default {
 
     if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders, status: 204 });
 
-    // AI Analysis Endpoint
+    // 2. AI Analysis Endpoint
     if (url.pathname === '/api/analyze' && request.method === 'POST') {
       try {
         const { expenses } = await request.json();
-        const safeExpenses = expenses.map(e => ({ ...e, id: String(e.id) }));
         
-        const prompt = `You are a financial categorizer. Analyze the following list of expenses and assign a short category name to each based on its 'id'. 
-        Rules:
-        - Merge similar items into broad groups. Split them if they are all from one category. Aim for 3 to 6 optimal categories.
-        - Output ONLY a valid JSON object.
-        - STRICT JSON RULES: All keys MUST be enclosed in double quotes (e.g., "123", not 123). All values MUST be enclosed in double quotes. No trailing commas. No markdown or conversational text.
-        Example: {"1": "Food", "2": "Transport"}
-        Data: ${JSON.stringify(safeExpenses)}`;
+        // 🚨 FIX 1: Simplify the payload. 
+        // Only send the ID and the raw item text so the AI doesn't try to categorize your username or dates.
+        const simplifiedData = expenses.map(e => ({
+          id: String(e.id),
+          item: e.category // Your raw input is saved in the 'category' column
+        }));
+        
+        const prompt = `You are a financial categorizer. Group these items into 3 to 6 broad categories.
+        - Output EXACTLY ONE valid JSON object.
+        - No conversational text, no explanations, no self-corrections.
+        - Format MUST be: {"id": "CategoryName"}
+        
+        Example: {"1": "Food & Dining", "2": "Transport"}
+        Data: ${JSON.stringify(simplifiedData)}`;
 
         const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
           messages: [{ role: 'user', content: prompt }]
         });
 
-        const rawResponse = aiResponse.response;
-        const startIndex = rawResponse.indexOf('{');
-        const endIndex = rawResponse.lastIndexOf('}');
+        // 🚨 FIX 2: Bulletproof Regex Parsing
+        // This matches all flat JSON objects and ignores any text outside of them.
+        const matches = aiResponse.response.match(/\{[^{}]+\}/g);
         
-        if (startIndex === -1 || endIndex === -1) throw new Error("AI failed to generate a JSON object.");
+        if (!matches || matches.length === 0) {
+          throw new Error("AI failed to generate a JSON object.");
+        }
         
-        let cleanString = rawResponse.substring(startIndex, endIndex + 1).replace(/,\s*}/g, '}');
+        // If the AI self-corrects and outputs two blocks, grab the last (corrected) one
+        let cleanString = matches[matches.length - 1].replace(/,\s*}/g, '}');
         
         let categoryMap;
         try {
@@ -59,9 +68,15 @@ export default {
           calculatedTotals[categoryName] = (calculatedTotals[categoryName] || 0) + exp.amount;
         });
 
-        return new Response(JSON.stringify({ analysis: JSON.stringify(calculatedTotals) }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 });
+        return new Response(JSON.stringify({ analysis: JSON.stringify(calculatedTotals) }), { 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 200 
+        });
       } catch (error) {
-        return new Response(JSON.stringify({ error: error.message }), { headers: corsHeaders, status: 500 });
+        return new Response(JSON.stringify({ error: error.message }), { 
+          headers: corsHeaders, 
+          status: 500 
+        });
       }
     }
 
